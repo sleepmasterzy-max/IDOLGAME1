@@ -1,5 +1,3 @@
-const { getStore } = require("@netlify/blobs");
-
 const MAX_SCORES = 100;
 const STORE_NAME = "nuomi-nmixx-leaderboard";
 const SCORES_KEY = "scores";
@@ -18,7 +16,7 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = openCloudStore();
+    const store = await openCloudStore();
     const currentScores = sanitizeScores((await store.get(SCORES_KEY, {
       type: "json",
       consistency: "strong"
@@ -95,7 +93,9 @@ exports.handler = async (event) => {
   }
 };
 
-function openCloudStore() {
+async function openCloudStore() {
+  const { getStore } = await import("@netlify/blobs");
+
   try {
     return getStore({
       name: STORE_NAME,
