@@ -18,11 +18,19 @@ exports.handler = async (event) => {
   }
 
   try {
-    const store = getStore(STORE_NAME);
-    const currentScores = sanitizeScores((await store.get(SCORES_KEY, { type: "json" })) || []);
+    const store = openCloudStore();
+    const currentScores = sanitizeScores((await store.get(SCORES_KEY, {
+      type: "json",
+      consistency: "strong"
+    })) || []);
 
     if (event.httpMethod === "GET") {
-      return respond(200, { scores: currentScores });
+      return respond(200, {
+        cloud: true,
+        required: true,
+        storage: "netlify-blobs",
+        scores: currentScores
+      });
     }
 
     if (event.httpMethod !== "POST") {
@@ -50,6 +58,8 @@ exports.handler = async (event) => {
 
     if (previous && previous.time <= time) {
       return respond(200, {
+        cloud: true,
+        required: true,
         accepted: false,
         previousBest: previous.time,
         scores: currentScores
@@ -72,6 +82,8 @@ exports.handler = async (event) => {
     }
 
     return respond(200, {
+      cloud: true,
+      required: true,
       accepted: true,
       scores: nextScores
     });
@@ -82,6 +94,17 @@ exports.handler = async (event) => {
     });
   }
 };
+
+function openCloudStore() {
+  try {
+    return getStore({
+      name: STORE_NAME,
+      consistency: "strong"
+    });
+  } catch (error) {
+    return getStore(STORE_NAME);
+  }
+}
 
 function parseBody(body) {
   try {

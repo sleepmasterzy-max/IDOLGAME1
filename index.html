@@ -487,10 +487,11 @@
       border: 2px solid rgba(61, 169, 145, 0.62);
       border-radius: 50%;
       pointer-events: none;
-      transform: translate(-50%, -50%);
+      transform: translate3d(-9999px, -9999px, 0) translate(-50%, -50%);
       opacity: 0;
       z-index: 5;
-      transition: opacity 160ms ease;
+      transition: none;
+      will-change: transform, opacity;
     }
 
     .cursor-wave::before,
@@ -509,7 +510,7 @@
 
     .cursor-wave.is-visible {
       opacity: 1;
-      animation: breathe 980ms ease-in-out infinite;
+      animation: none;
     }
 
     @keyframes breathe {
@@ -1676,7 +1677,7 @@
       <aside class="leaderboard" aria-label="排行榜">
         <div class="leaderboard-head">
           <h2>本地排行榜</h2>
-          <p>按通关用时升序排列，同一 ID 只保留最快成绩，最多展示前 100 名。</p>
+          <p id="leaderboardStatus">共享排行榜连接中...</p>
         </div>
         <div class="score-list" id="scoreList"></div>
       </aside>
@@ -1776,7 +1777,7 @@
     ];
 
     const STORAGE_KEY = "nuomi-nmixx-leaderboard-v1";
-    const LEADERBOARD_API = "/api/leaderboard";
+    const LEADERBOARD_API = "/.netlify/functions/leaderboard";
     const MAX_SCORES = 100;
     const HIT_RADIUS = 42;
     const MAX_HINT_VOLUME = 0.92;
@@ -1796,6 +1797,7 @@
       timerLabel: document.getElementById("timerLabel"),
       soundLabel: document.getElementById("soundLabel"),
       scoreList: document.getElementById("scoreList"),
+      leaderboardStatus: document.getElementById("leaderboardStatus"),
       modalBackdrop: document.getElementById("modalBackdrop"),
       modalTitle: document.getElementById("modalTitle"),
       modalMessage: document.getElementById("modalMessage"),
@@ -1823,6 +1825,7 @@
       lastStartupSoundAt: 0,
       audioContext: null,
       masterGain: null,
+      unlockTester: null,
       audioItems: [],
       oneShotAudios: [],
       leaderboardScores: [],
@@ -1853,13 +1856,18 @@
     }
 
     function createHintElement(src) {
-      const audio = new Audio(src);
+      const audio = document.createElement("audio");
+      audio.src = src;
       audio.loop = true;
       audio.preload = "auto";
-      audio.volume = 0;
+      audio.volume = 0.001;
       audio.muted = false;
+      audio.playsInline = true;
       audio.setAttribute("playsinline", "");
       audio.setAttribute("webkit-playsinline", "");
+      audio.style.display = "none";
+      audio.dataset.role = "member-hint-audio";
+      document.body.appendChild(audio);
       return audio;
     }
 
@@ -1901,20 +1909,34 @@
         ? state.audioContext.resume().catch(() => {})
         : Promise.resolve();
 
-      const tester = new Audio("nmixx.mp3");
+      if (state.unlockTester) {
+        state.unlockTester.pause();
+        state.unlockTester.remove();
+      }
+
+      const tester = document.createElement("audio");
+      tester.src = "nmixx.mp3";
       tester.preload = "auto";
       tester.volume = 1;
       tester.muted = false;
+      tester.playsInline = true;
       tester.setAttribute("playsinline", "");
       tester.setAttribute("webkit-playsinline", "");
+      tester.dataset.role = "unlock-test-audio";
+      document.body.appendChild(tester);
+      state.unlockTester = tester;
 
       // Mobile autoplay policy: call play() synchronously in the button click stack.
-      const testerPromise = tester.play();
+      tester.load();
+      const testerPlay = tester.play();
+      const testerPromise = testerPlay && typeof testerPlay.then === "function"
+        ? testerPlay.then(() => true).catch(() => false)
+        : Promise.resolve(true);
       const hintPromises = state.audioItems.map(startHintFileAudio);
       playUnlockTone();
 
-      if (testerPromise && typeof testerPromise.then === "function") {
-        testerPromise
+      if (testerPlay && typeof testerPlay.then === "function") {
+        testerPlay
           .then(() => {
             dom.soundLabel.textContent = "\u5df2\u5f00\u542f";
           })
@@ -1934,18 +1956,18 @@
         }, 1300);
       }
 
-      Promise.allSettled([resumePromise, testerPromise, ...hintPromises]).then((results) => {
-        const usableCount = results.filter((result) => result.status === "fulfilled" && result.value !== false).length;
+      Promise.allSettled([testerPromise, ...hintPromises]).then((results) => {
+        const usableCount = results.filter((result) => result.status === "fulfilled" && result.value === true).length;
         dom.soundLabel.textContent = usableCount > 1 ? "\u5df2\u5f00\u542f" : "\u97f3\u9891\u52a0\u8f7d\u5931\u8d25";
       });
     }
 
     async function startHintFileAudio(item) {
-      const htmlAudioReady = startHintElement(item);
+      const htmlAudioReadyPromise = startHintElement(item);
 
       try {
         await loadHintBuffer(item);
-        if (!state.audioContext || !item.hintGain) return htmlAudioReady;
+        if (!state.audioContext || !item.hintGain) return htmlAudioReadyPromise;
         if (item.source) return true;
 
         const source = state.audioContext.createBufferSource();
@@ -1959,6 +1981,7 @@
         dom.soundLabel.textContent = "已开启";
         return true;
       } catch (error) {
+        const htmlAudioReady = await htmlAudioReadyPromise;
         item.fileStarted = htmlAudioReady;
         item.fileUsable = htmlAudioReady;
         return htmlAudioReady;
@@ -1966,20 +1989,27 @@
     }
 
     function startHintElement(item) {
-      if (!item.audio) return false;
-      item.audio.volume = 0;
+      if (!item.audio) return Promise.resolve(false);
+      item.audio.volume = 0.001;
+      item.audio.muted = false;
+      item.audio.load();
 
       const playPromise = item.audio.play();
       if (playPromise && typeof playPromise.catch === "function") {
-        playPromise
+        return playPromise
           .then(() => {
             item.fileStarted = true;
             item.fileUsable = true;
+            item.audio.volume = 0;
+            return true;
           })
-          .catch(() => {});
+          .catch(() => false);
       }
 
-      return true;
+      item.fileStarted = true;
+      item.fileUsable = true;
+      item.audio.volume = 0;
+      return Promise.resolve(true);
     }
 
     async function loadHintBuffer(item) {
@@ -2174,8 +2204,7 @@
       if (!point) return;
 
       state.pointer = point;
-      dom.cursorWave.style.left = `${point.x}px`;
-      dom.cursorWave.style.top = `${point.y}px`;
+      dom.cursorWave.style.transform = `translate3d(${point.x}px, ${point.y}px, 0) translate(-50%, -50%)`;
 
       if (state.isRunning) {
         dom.cursorWave.classList.add("is-visible");
@@ -2461,29 +2490,19 @@
     }
 
     function loadLocalScores() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        return sanitizeScores(parsed);
-      } catch (error) {
-        return [];
-      }
+      return [];
     }
 
     function saveLocalScores(scores) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sanitizeScores(scores).slice(0, MAX_SCORES)));
+      state.leaderboardScores = sanitizeScores(scores).slice(0, MAX_SCORES);
     }
 
     function getCachedScores() {
-      if (state.leaderboardScores.length) {
-        return state.leaderboardScores;
-      }
-
-      state.leaderboardScores = loadLocalScores();
       return state.leaderboardScores;
     }
 
     async function fetchSharedScores() {
+      dom.leaderboardStatus.textContent = "共享排行榜连接中...";
       const response = await fetch(LEADERBOARD_API, {
         method: "GET",
         headers: { "Accept": "application/json" },
@@ -2495,14 +2514,19 @@
       }
 
       const payload = await response.json();
+      if (payload.cloud !== true) {
+        throw new Error("Cloud leaderboard is not active");
+      }
       const scores = sanitizeScores(payload.scores || []);
       state.leaderboardScores = scores;
       state.leaderboardOnline = true;
       saveLocalScores(scores);
+      dom.leaderboardStatus.textContent = "共享排行榜已连接，所有玩家可见。";
       return scores;
     }
 
     async function postSharedScore(id, time) {
+      dom.leaderboardStatus.textContent = "正在上传到共享排行榜...";
       const response = await fetch(LEADERBOARD_API, {
         method: "POST",
         headers: {
@@ -2516,11 +2540,15 @@
       if (!response.ok) {
         throw new Error(payload.error || `Leaderboard POST failed: ${response.status}`);
       }
+      if (payload.cloud !== true) {
+        throw new Error("Cloud leaderboard is not active");
+      }
 
       const scores = sanitizeScores(payload.scores || []);
       state.leaderboardScores = scores;
       state.leaderboardOnline = true;
       saveLocalScores(scores);
+      dom.leaderboardStatus.textContent = "共享排行榜已更新，所有玩家可见。";
 
       return {
         scores,
@@ -2555,7 +2583,7 @@
     }
 
     function qualifiesForTop100(time) {
-      const scores = getCachedScores();
+      const scores = state.leaderboardOnline ? getCachedScores() : [];
       return scores.length < MAX_SCORES || time < scores[scores.length - 1].time;
     }
 
@@ -2570,7 +2598,7 @@
 
       dom.submitScoreBtn.disabled = true;
       dom.formError.textContent = "正在上传成绩...";
-      const scores = getCachedScores();
+      const scores = state.leaderboardOnline ? getCachedScores() : [];
       const normalizedId = id.toLocaleLowerCase();
       const previous = scores.find((score) => score.id.toLocaleLowerCase() === normalizedId);
 
@@ -2591,22 +2619,16 @@
         renderScores(result.scores);
         closeModal();
       } catch (error) {
-        scores.push({
-          id,
-          time: state.finalTime,
-          createdAt: new Date().toISOString()
-        });
-        state.leaderboardScores = sanitizeScores(scores);
-        saveLocalScores(state.leaderboardScores);
-        renderScores(state.leaderboardScores);
-        dom.formError.textContent = "线上榜单暂不可用，成绩已先保存到本机。";
+        state.leaderboardOnline = false;
+        dom.leaderboardStatus.textContent = "\u5171\u4eab\u6392\u884c\u699c\u672a\u8fde\u63a5\uff1a\u8bf7\u786e\u8ba4 Netlify \u5df2\u4ece GitHub \u90e8\u7f72\u5e76\u542f\u7528 Functions\u3002";
+        dom.formError.textContent = "\u5171\u4eab\u6392\u884c\u699c\u672a\u8fde\u63a5\uff0c\u6210\u7ee9\u6ca1\u6709\u4e0a\u4f20\u3002\u8bf7\u91cd\u65b0\u90e8\u7f72 GitHub \u5230 Netlify \u540e\u518d\u8bd5\u3002";
       } finally {
         dom.submitScoreBtn.disabled = false;
       }
     }
 
     async function renderScores(scores = null) {
-      const currentScores = scores || getCachedScores();
+      const currentScores = scores || (state.leaderboardOnline ? getCachedScores() : []);
 
       if (!currentScores.length) {
         dom.scoreList.innerHTML = '<div class="empty-score">还没有记录，第一位恩瑟正在路上。</div>';
@@ -2626,6 +2648,9 @@
           renderScores(sharedScores);
         } catch (error) {
           state.leaderboardOnline = false;
+          state.leaderboardScores = [];
+          dom.leaderboardStatus.textContent = "\u5171\u4eab\u6392\u884c\u699c\u672a\u8fde\u63a5\uff1a\u8bf7\u786e\u8ba4 Netlify Functions \u5df2\u90e8\u7f72\u3002";
+          dom.scoreList.innerHTML = '<div class="empty-score">\u4e91\u7aef\u6392\u884c\u699c\u672a\u8fde\u63a5\u3002\u6253\u5f00 /.netlify/functions/leaderboard \u5e94\u8be5\u770b\u5230 cloud:true\u3002</div>';
         }
       }
     }

@@ -2,7 +2,15 @@
   publish = "."
   functions = "netlify/functions"
 
+[functions]
+  directory = "netlify/functions"
+
 [[redirects]]
   from = "/api/leaderboard"
+  to = "/.netlify/functions/leaderboard"
+  status = 200
+
+[[redirects]]
+  from = "/api/leaderboard/*"
   to = "/.netlify/functions/leaderboard"
   status = 200
